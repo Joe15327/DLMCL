@@ -1,0 +1,493 @@
+close all; clear;clc
+
+% get test patient rescaled pixel spacing and SUV coefficients
+load('/raid/zzhou13/lymphomaPET/datasets/DICOMs/scan0/pixSpaceRescale_test.mat')
+load('/raid/zzhou13/lymphomaPET/datasets/DICOMs/scan0/SUVconstant_test.mat')
+
+% get test patient slice range and indices
+load('/raid/zzhou13/lymphomaPET/datasets/patientScan0Test.mat')
+sliceNums = zeros(30,1);
+sliceIdxs = cell(30,1);
+for i = 1:30
+    patient = patientScan0Test(i).mask;
+    sliceNums(i) = size(patient,3);
+end
+
+sliceIdxs{1} = 1:sliceNums(1);
+for i = 2:30
+    lastIdx = sliceIdxs{i-1};
+    curStart = lastIdx(end) + 1;
+    curEnd = lastIdx(end) + sliceNums(i);
+    sliceIdxs{i} = curStart:curEnd;
+end
+
+OSIidx = [9, 13, 16, 17, 19, 20, 24];
+MDAidx = setdiff(1:30, OSIidx);
+
+femaleIdx = [2, 8, 10, 12, 20, 22, 23, 30];
+maleIdx = setdiff(1:30, femaleIdx);
+
+siemensIdx = [2, 7, 13, 14, 23];
+geIdx = setdiff(1:30, siemensIdx);
+
+
+% original test data
+load('/raid/zzhou13/lymphomaPET/datasets/dataPrep25D/mskTst.mat')
+mskTst = permute(mskTst, [2,3,1]);
+[a,b,c] = size(mskTst);
+ccTst = bwconncomp(mskTst);
+statTst = regionprops(ccTst, 'Area','BoundingBox','Centroid','PixelIdxList');
+numObjTst = ccTst.NumObjects;
+
+pxlIdxTst = cell(numObjTst, 1);    % store the pixel index for comparison
+szeTst = zeros(numObjTst, 1);
+vlmTst = zeros(numObjTst, 1);
+ctdTst = zeros(numObjTst, 1);
+
+for i = 1:numObjTst
+    pxlIdxTst{i} = statTst(i).PixelIdxList;
+    
+    xsize = statTst(i).BoundingBox(4);
+    ysize = statTst(i).BoundingBox(5);
+    szeTst(i) = max([xsize, ysize]);
+    
+    vlmTst(i) = statTst(i).Area;
+    ctdTst(i) = statTst(i).Centroid(3);
+end
+
+% figure;
+% edges = 0:6:126;
+% hgt = histogram(szeTst, 'BinEdges', edges);
+% xticks(edges)
+% xlabel('loci size (mm)')
+% ylabel('count')
+% title('test data loci size distribution')
+
+
+% get loci properties per patient of the ground truth
+lociTotal = zeros(30,1);
+
+ptLociPxIdGT = cell(30,1);
+ptLociSizeGT = cell(30,1);
+ptLociPosiGT = cell(30,1);
+ptLociSUVmGT = cell(30,1);
+allGTlociSze = [];
+allGTlociSUV = [];
+
+for i = 1:30
+    patientImage = patientScan0Test(i).PT;
+    patientMask = patientScan0Test(i).mask;
+    sliceNm = size(patientMask,3);
+    pixSpace = pixSpaceRescale_test(i);
+    SUV_coeff = SUVconstant_test(i);
+    
+    cc = bwconncomp(patientMask);
+    stat = regionprops(cc, 'Area','BoundingBox','Centroid','PixelIdxList');
+    numObj = cc.NumObjects;
+    
+    lociTotal(i) = numObj;
+    volume = zeros(numObj, 1);
+    centroid = zeros(numObj, 1);
+    
+    pixelIdx = cell(numObj, 1);    % store the pixel index for comparison
+    lociSize = zeros(numObj, 1);   % store the loci size
+    lociPosi = zeros(numObj, 1);   % store the position about diaphragm
+    lociSUVm = zeros(numObj, 1);   % store the max SUV
+
+    for j = 1:numObj
+        pixelIdx{j} = stat(j).PixelIdxList;
+        volume(j) = stat(j).Area;
+        centroid(j) = stat(j).Centroid(3);
+        
+        xsize = stat(j).BoundingBox(4) * pixSpace;
+        ysize = stat(j).BoundingBox(5) * pixSpace;
+        lociSize(j) = max([xsize, ysize]);
+        
+        if centroid(j) < sliceNm*0.43
+            lociPosi(j) = 1; % above the diaphragm
+        else
+            lociPosi(j) = 2; % below the diaphragm
+        end
+        
+        lociSUVm(j) = max(patientImage(pixelIdx{j})) * SUV_coeff;
+    end
+    
+    ptLociPxIdGT{i} = pixelIdx;
+    ptLociSizeGT{i} = lociSize;
+    ptLociPosiGT{i} = lociPosi;
+    ptLociSUVmGT{i} = lociSUVm;
+    allGTlociSze = cat(1, allGTlociSze, lociSize);
+    allGTlociSUV = cat(1, allGTlociSUV, lociSUVm);
+end
+    
+
+% prediction mask
+clc
+load('mskPrd_VGG16.mat')
+mskPrd = permute(mskPrd, [2,3,1]);
+mskPTh = uint8(mskPrd >= 0.5);     % change the level here
+ccPrd = bwconncomp(mskPTh);
+statPrd = regionprops(ccPrd, 'Area','BoundingBox','Centroid','PixelIdxList');
+numObjPrd = ccPrd.NumObjects;
+
+lociSizePrd = zeros(numObjPrd, 1);
+pxlIdxPrd = cell(numObjPrd, 1);    % store the pixel index for comparison
+vlmPrd = zeros(numObjPrd, 1);
+ctdPrd = zeros(numObjPrd, 1);
+
+for i = 1:numObjPrd
+    pxlIdxPrd{i} = statPrd(i).PixelIdxList;
+    
+    xsize = statPrd(i).BoundingBox(4);
+    ysize = statPrd(i).BoundingBox(5);
+    lociSizePrd(i) = max([xsize, ysize]);
+
+    vlmPrd(i) = statPrd(i).Area;
+    ctdPrd(i) = statPrd(i).Centroid(3);
+end
+
+
+% calculate overall dice
+overlap = mskTst.*mskPTh;
+union = sum(mskTst(:)) + sum(mskPTh(:));
+globalDice = 2*sum(overlap(:))/union;
+display(['global Dice:' num2str(globalDice) newline])
+
+
+% get loci properties per patient from prediction, and per-patient Dice
+ptLociPxIdPD = cell(30,1);
+ptLociSizePD = cell(30,1);
+ptLociPosiPD = cell(30,1);
+ptLociSUVmPD = cell(30,1);
+ptDSC = zeros(30,1);
+
+for i = 1:30
+    patientImage = patientScan0Test(i).PT;
+    patientGTmsk = patientScan0Test(i).mask;
+    patientMask = mskPTh(:,:,sliceIdxs{i});
+    
+    overlap = patientGTmsk.*patientMask;
+    union = sum(patientGTmsk(:)) + sum(patientMask(:));
+    ptDSC(i) = 2*sum(overlap(:))/union;
+    
+    sliceNm = size(patientMask,3);
+    pixSpace = pixSpaceRescale_test(i);
+    SUV_coeff = SUVconstant_test(i);
+    
+    cc = bwconncomp(patientMask);
+    stat = regionprops(cc, 'Area','BoundingBox','Centroid','PixelIdxList');
+    numObj = cc.NumObjects;
+
+    pixelIdx = cell(numObj, 1);    % store the pixel index for comparison
+    lociSize = zeros(numObj, 1);   % store the loci size
+    lociPosi = zeros(numObj, 1);   % store the position about diaphragm
+    lociSUVm = zeros(numObj, 1);   % store the max SUV
+
+    for j = 1:numObj
+        pixelIdx{j} = stat(j).PixelIdxList;
+        centroid = stat(j).Centroid(3);
+    
+        xsize = stat(j).BoundingBox(4) * pixSpace;
+        ysize = stat(j).BoundingBox(5) * pixSpace;
+        lociSize(j) = max([xsize, ysize]);
+        
+        if centroid <= sliceNm*0.43
+            lociPosi(j) = 1; % above the diaphragm
+        else
+            lociPosi(j) = 2; % below the diaphragm
+        end
+        
+        lociSUVm(j) = max(patientImage(pixelIdx{j})) * SUV_coeff;
+    end
+    ptLociPxIdPD{i} = pixelIdx;
+    ptLociSizePD{i} = lociSize;
+    ptLociPosiPD{i} = lociPosi;
+    ptLociSUVmPD{i} = lociSUVm;   
+end
+disp(['per-patient DSC: ' num2str(mean(ptDSC))]);
+disp(['95% CI: ' num2str(mean(ptDSC) - 2.045*std(ptDSC)/sqrt(30))]);
+disp(['95% CI: ' num2str(mean(ptDSC) + 2.045*std(ptDSC)/sqrt(30))]);
+
+
+% compare the ground truth and prediction labels
+tpLoci = cell(30,1);
+fpLoci = cell(30,1);
+
+for k = 1:30
+    ptGTlociPixs = ptLociPxIdGT{k};
+    ptGTlociSize = ptLociSizeGT{k};
+    ptGTlociPosi = ptLociPosiGT{k};
+    ptGTlociSUVm = ptLociSUVmGT{k};   
+    
+    ptPDlociPixs = ptLociPxIdPD{k};
+    ptPDlociSize = ptLociSizePD{k};
+    ptPDlociPosi = ptLociPosiPD{k};
+    ptPDlociSUVm = ptLociSUVmPD{k};
+    
+    tpList = zeros(length(ptGTlociSize), 3); % 3 columns for size/position/SUV
+    fpList = zeros(length(ptPDlociSize), 3); % 3 column  for size/position/SUV
+    
+    for i = 1:length(ptPDlociSize)
+        pxlIdxB = ptPDlociPixs{i};
+        tfpSwitch = 0;
+
+        for j = 1:length(ptGTlociSize)
+            pxlIdxA = ptGTlociPixs{j};        
+            cmnPxl = intersect(pxlIdxB, pxlIdxA);
+            
+            if length(cmnPxl) >= 1
+                tpList(j,1) = ptGTlociSize(j);
+                tpList(j,2) = ptGTlociPosi(j);
+                tpList(j,3) = ptGTlociSUVm(j);
+                tfpSwitch = 1;
+            end
+        end
+  
+        if tfpSwitch == 0
+            fpList(i,1) = ptPDlociSize(i);
+            fpList(i,2) = ptPDlociPosi(i);
+            fpList(i,3) = ptPDlociSUVm(i);
+        end
+    end
+
+    tpLoci{k} = tpList;
+    fpLoci{k} = fpList;
+end
+
+
+% general sensitivity and PPV
+ptTPs = zeros(30, 1);
+ptFPs = zeros(30, 1);
+ptSens = zeros(30, 1);
+ptPPV = zeros(30, 1);
+for i = 1:30
+    tpList = tpLoci{i};
+    fpList = fpLoci{i};
+    ptTPs(i) = sum(tpList(:,1) > 0);
+    ptFPs(i) = sum(fpList(:,1) > 0);
+    ptSens(i) = ptTPs(i)/lociTotal(i);
+    ptPPV(i) = ptTPs(i)/(ptTPs(i) + ptFPs(i));
+end
+% display the numbers
+disp(newline)
+disp(['mean sensitivity is: ', num2str(mean(ptSens))])
+disp(['std sensitivity is: ',  num2str(std(ptSens))])
+disp(['95 CI up is: ',  num2str(mean(ptSens) + 2.045*std(ptSens)/sqrt(30))])
+disp(['95 CI low is: ', num2str(mean(ptSens) - 2.045*std(ptSens)/sqrt(30))])
+disp(['error bar: ', num2str(2.045*std(ptSens)/sqrt(30)), newline])
+
+disp(['mean PPV is: ',  num2str(mean(ptPPV))])
+disp(['std PPV is: ',   num2str(std(ptPPV))])
+disp(['95 CI up is: ',  num2str(mean(ptPPV) + 2.045*std(ptPPV)/sqrt(30))])
+disp(['95 CI low is: ', num2str(mean(ptPPV) - 2.045*std(ptPPV)/sqrt(30)), newline])
+
+disp(['mean FPs: ', num2str(mean(ptFPs))])
+disp(['95 CI up is: ',  num2str(mean(ptFPs) + 2.045*std(ptFPs)/sqrt(30))])
+disp(['95 CI low is: ', num2str(mean(ptFPs) - 2.045*std(ptFPs)/sqrt(30))])
+disp(['error bar: ', num2str(2.045*std(ptFPs)/sqrt(30)), newline])
+
+disp(['TPs: ', num2str(sum(ptTPs))])
+disp(['all detections: ', num2str(sum(ptTPs)+sum(ptFPs)), newline])
+
+
+% loci size sensitivity
+ptGTsBA10 = zeros(30,2);
+ptTPsBA10 = zeros(30,2);
+ptSenBA10 = zeros(30,2);
+for i = 1:30
+    tpList = tpLoci{i};
+    ptGTsBA10(i,1) = sum(ptLociSizeGT{i} < 10);
+    ptGTsBA10(i,2) = sum(ptLociSizeGT{i} >= 10);
+    ptTPsBA10(i,1) = sum((tpList(:,1) < 10) & (tpList(:,1) > 0));
+    ptTPsBA10(i,2) = sum(tpList(:,1) >= 10);
+    
+    ptSenBA10(i,1) = ptTPsBA10(i,1)/ptGTsBA10(i,1);
+    ptSenBA10(i,2) = ptTPsBA10(i,2)/ptGTsBA10(i,2);
+end
+% display the numbers
+disp(['<10 mm sensitivity is: ', num2str(nanmean(ptSenBA10(:,1)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenBA10(:,1)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenBA10(:,1)) + 2.045*nanstd(ptSenBA10(:,1))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenBA10(:,1)) - 2.045*nanstd(ptSenBA10(:,1))/sqrt(30))])
+
+disp(['>=10 mm sensitivity is: ', num2str(nanmean(ptSenBA10(:,2)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenBA10(:,2)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenBA10(:,2)) + 2.045*nanstd(ptSenBA10(:,2))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenBA10(:,2)) - 2.045*nanstd(ptSenBA10(:,2))/sqrt(30))])
+
+[h, p] = ttest2(ptSenBA10(:,1), ptSenBA10(:,2));
+disp(['loci size matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+
+% loci position sensitivity
+ptGTsABD = zeros(30,2);
+ptTPsABD = zeros(30,2);
+ptSenABD = zeros(30,2);
+for i = 1:30
+    tpList = tpLoci{i};
+    ptGTsABD(i,1) = sum(ptLociPosiGT{i} == 1);
+    ptGTsABD(i,2) = sum(ptLociPosiGT{i} == 2);
+    ptTPsABD(i,1) = sum(tpList(:,2) == 1);
+    ptTPsABD(i,2) = sum(tpList(:,2) == 2);
+    
+    ptSenABD(i,1) = ptTPsABD(i,1)/ptGTsABD(i,1);
+    ptSenABD(i,2) = ptTPsABD(i,2)/ptGTsABD(i,2);
+end
+% display the numbers
+disp(['above diaphragm sensitivity is: ', num2str(nanmean(ptSenABD(:,1)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenABD(:,1)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenABD(:,1)) + 2.045*nanstd(ptSenABD(:,1))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenABD(:,1)) - 2.045*nanstd(ptSenABD(:,1))/sqrt(30))])
+
+disp(['below diaphragm sensitivity is: ', num2str(nanmean(ptSenABD(:,2)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenABD(:,2)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenABD(:,2)) + 2.045*nanstd(ptSenABD(:,2))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenABD(:,2)) - 2.045*nanstd(ptSenABD(:,2))/sqrt(30))])
+
+[h, p] = ttest2(ptSenABD(:,1), ptSenABD(:,2));
+disp(['loci position matters sensitivity: ', num2str(h), ', p value: ', num2str(p), newline])
+
+
+% loci SUV sensitivity
+ptGTsSUV = zeros(30,2);
+ptTPsSUV = zeros(30,2);
+ptSenSUV = zeros(30,2);
+for i = 1:30
+    tpList = tpLoci{i};
+    ptGTsSUV(i,1) = sum(ptLociSUVmGT{i} < 2.5);
+    ptGTsSUV(i,2) = sum(ptLociSUVmGT{i} >= 2.5);
+    ptTPsSUV(i,1) = sum((tpList(:,3) < 2.5) & (tpList(:,3) > 0));
+    ptTPsSUV(i,2) = sum(tpList(:,3) >= 2.5);
+    
+    ptSenSUV(i,1) = ptTPsSUV(i,1)/ptGTsSUV(i,1);
+    ptSenSUV(i,2) = ptTPsSUV(i,2)/ptGTsSUV(i,2);
+end
+% display the numbers
+disp(['<2.5 SUV sensitivity is: ', num2str(nanmean(ptSenSUV(:,1)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenSUV(:,1)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenSUV(:,1)) + 2.045*nanstd(ptSenSUV(:,1))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenSUV(:,1)) - 2.045*nanstd(ptSenSUV(:,1))/sqrt(30))])
+
+disp(['>=2.5 SUV sensitivity is: ', num2str(nanmean(ptSenSUV(:,2)))])
+disp(['std sensitivity is: ',  num2str(nanstd(ptSenSUV(:,2)))])
+disp(['95 CI up is: ',  num2str(nanmean(ptSenSUV(:,2)) + 2.045*nanstd(ptSenSUV(:,2))/sqrt(30))])
+disp(['95 CI low is: ', num2str(nanmean(ptSenSUV(:,2)) - 2.045*nanstd(ptSenSUV(:,2))/sqrt(30))])
+
+[h, p] = ttest2(ptSenSUV(:,1), ptSenSUV(:,2));
+disp(['loci SUV matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+
+% MDA/OSI sensitivity and PPV
+ptTPsMDA = ptTPs(MDAidx);
+ptFPsMDA = ptFPs(MDAidx);
+ptSenMDA = ptSens(MDAidx);
+ptPPVMDA = ptPPV(MDAidx);
+
+ptTPsOSI = ptTPs(OSIidx);
+ptFPsOSI = ptFPs(OSIidx);
+ptSenOSI = ptSens(OSIidx);
+ptPPVOSI = ptPPV(OSIidx);
+% display the numbers
+disp(['MDA sensitivity is: ', num2str(mean(ptSenMDA))])
+disp(['std sensitivity is: ',  num2str(std(ptSenMDA))])
+disp(['95 CI up is: ',  num2str(mean(ptSenMDA) + 2.074*std(ptSenMDA)/sqrt(23))])
+disp(['95 CI low is: ', num2str(mean(ptSenMDA) - 2.074*std(ptSenMDA)/sqrt(23))])
+
+disp(['MDA PPV is: ',  num2str(mean(ptPPVMDA))])
+disp(['std PPV is: ',   num2str(std(ptPPVMDA))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVMDA) + 2.074*std(ptPPVMDA)/sqrt(23))])
+disp(['95 CI low is: ', num2str(mean(ptPPVMDA) - 2.074*std(ptPPVMDA)/sqrt(23)), newline])
+
+disp(['OSI sensitivity is: ', num2str(mean(ptSenOSI))])
+disp(['std sensitivity is: ',  num2str(std(ptSenOSI))])
+disp(['95 CI up is: ',  num2str(mean(ptSenOSI) + 2.447*std(ptSenOSI)/sqrt(7))])
+disp(['95 CI low is: ', num2str(mean(ptSenOSI) - 2.447*std(ptSenOSI)/sqrt(7))])
+
+disp(['OSI PPV is: ',  num2str(mean(ptPPVOSI))])
+disp(['std PPV is: ',   num2str(std(ptPPVOSI))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVOSI) + 2.447*std(ptPPVOSI)/sqrt(7))])
+disp(['95 CI low is: ', num2str(mean(ptPPVOSI) - 2.447*std(ptPPVOSI)/sqrt(7)), newline])
+
+[h, p] = ttest2(ptSenMDA, ptSenOSI);
+disp(['MDA/OSI sens. matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+[h, p] = ttest2(ptPPVMDA, ptPPVOSI);
+disp(['MDA/OSI PPV matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+
+
+% Male/Female sensitivity and PPV
+ptTPsMale = ptTPs(maleIdx);
+ptFPsMale = ptFPs(maleIdx);
+ptSenMale = ptSens(maleIdx);
+ptPPVMale = ptPPV(maleIdx);
+
+ptTPsFeml = ptTPs(femaleIdx);
+ptFPsFeml = ptFPs(femaleIdx);
+ptSenFeml = ptSens(femaleIdx);
+ptPPVFeml = ptPPV(femaleIdx);
+% display the numbers
+disp(['Male sensitivity is: ', num2str(mean(ptSenMale))])
+disp(['std sensitivity is: ',  num2str(std(ptSenMale))])
+disp(['95 CI up is: ',  num2str(mean(ptSenMale) + 2.080*std(ptSenMale)/sqrt(22))])
+disp(['95 CI low is: ', num2str(mean(ptSenMale) - 2.080*std(ptSenMale)/sqrt(22))])
+
+disp(['Male PPV is: ',  num2str(mean(ptPPVMale))])
+disp(['std PPV is: ',   num2str(std(ptPPVMale))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVMale) + 2.080*std(ptPPVMale)/sqrt(22))])
+disp(['95 CI low is: ', num2str(mean(ptPPVMale) - 2.080*std(ptPPVMale)/sqrt(22)), newline])
+
+disp(['Female sensitivity is: ', num2str(mean(ptSenFeml))])
+disp(['std sensitivity is: ',  num2str(std(ptSenFeml))])
+disp(['95 CI up is: ',  num2str(mean(ptSenFeml) + 2.365*std(ptSenFeml)/sqrt(8))])
+disp(['95 CI low is: ', num2str(mean(ptSenFeml) - 2.365*std(ptSenFeml)/sqrt(8))])
+
+disp(['Female PPV is: ',  num2str(mean(ptPPVFeml))])
+disp(['std PPV is: ',   num2str(std(ptPPVFeml))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVFeml) + 2.365*std(ptPPVFeml)/sqrt(8))])
+disp(['95 CI low is: ', num2str(mean(ptPPVFeml) - 2.365*std(ptPPVFeml)/sqrt(8)), newline])
+
+[h, p] = ttest2(ptSenMale, ptSenFeml);
+disp(['Male/Female sens. matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+[h, p] = ttest2(ptPPVMale, ptPPVFeml);
+disp(['Male/Female PPV matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+
+% GE/Siemens sensitivity and PPV
+ptTPsGE = ptTPs(geIdx);
+ptFPsGE = ptFPs(geIdx);
+ptSenGE = ptSens(geIdx);
+ptPPVGE = ptPPV(geIdx);
+
+ptTPsSMNS = ptTPs(siemensIdx);
+ptFPsSMNS = ptFPs(siemensIdx);
+ptSenSMNS = ptSens(siemensIdx);
+ptPPVSMNS = ptPPV(siemensIdx);
+% display the numbers
+disp(['GE sensitivity is: ', num2str(mean(ptSenGE))])
+disp(['std sensitivity is: ',  num2str(std(ptSenGE))])
+disp(['95 CI up is: ',  num2str(mean(ptSenGE) + 2.064*std(ptSenMale)/sqrt(25))])
+disp(['95 CI low is: ', num2str(mean(ptSenGE) - 2.064*std(ptSenMale)/sqrt(25))])
+
+disp(['GE PPV is: ',  num2str(mean(ptPPVGE))])
+disp(['std PPV is: ',   num2str(std(ptPPVGE))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVGE) + 2.064*std(ptPPVMale)/sqrt(25))])
+disp(['95 CI low is: ', num2str(mean(ptPPVGE) - 2.064*std(ptPPVMale)/sqrt(25)), newline])
+
+disp(['Siemens sensitivity is: ', num2str(mean(ptSenSMNS))])
+disp(['std sensitivity is: ',  num2str(std(ptSenSMNS))])
+disp(['95 CI up is: ',  num2str(mean(ptSenSMNS) + 2.776*std(ptSenSMNS)/sqrt(5))])
+disp(['95 CI low is: ', num2str(mean(ptSenSMNS) - 2.776*std(ptSenSMNS)/sqrt(5))])
+
+disp(['Siemens PPV is: ',  num2str(mean(ptPPVSMNS))])
+disp(['std PPV is: ',   num2str(std(ptPPVSMNS))])
+disp(['95 CI up is: ',  num2str(mean(ptPPVSMNS) + 2.776*std(ptPPVSMNS)/sqrt(5))])
+disp(['95 CI low is: ', num2str(mean(ptPPVSMNS) - 2.776*std(ptPPVSMNS)/sqrt(5)), newline])
+
+[h, p] = ttest2(ptSenGE, ptSenSMNS);
+disp(['GE/Siemens sens. matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
+[h, p] = ttest2(ptPPVGE, ptPPVSMNS);
+disp(['GE/Siemens PPV matters: ', num2str(h), ', p value: ', num2str(p), newline])
+
